@@ -73,19 +73,33 @@ class TestStruktur:
 
 
 class TestDashboard:
-    async def test_angka_cocok_dengan_database(self, workbook):
+    """Dashboard bertema gelap: kartu KPI, strip bulan ini, grafik.
+
+    Tata letaknya kisi kolom, bukan pasangan label/nilai berurutan, jadi
+    pengujian menunjuk sel tertentu. Yang diuji tetap sama: angka di layar
+    harus sama dengan angka di database, bukan hasil hitung ulang Excel.
+    """
+
+    #: Kolom kiri tiap kartu KPI; nilainya ada di baris ke-2 kartu (baris 6).
+    KOLOM_KARTU = {"pemasukan": 2, "pengeluaran": 6, "saldo": 10, "transaksi": 14}
+    BARIS_NILAI_KARTU = 6
+
+    async def test_angka_kartu_cocok_dengan_database(self, workbook):
         wb, data, _ = workbook
         ws = wb["DASHBOARD"]
-        pasangan = {
-            ws.cell(row=r, column=2).value: ws.cell(row=r, column=3).value
-            for r in range(3, 30)
-        }
+        b = self.BARIS_NILAI_KARTU
+        k = self.KOLOM_KARTU
 
-        assert pasangan["Saldo Awal"] == float(data.saldo.saldo_awal)
-        assert pasangan["Total Pemasukan"] == float(data.saldo.total_pemasukan)
-        assert pasangan["Total Pengeluaran"] == float(data.saldo.total_pengeluaran)
-        assert pasangan["Saldo Saat Ini"] == float(data.saldo.saldo_sekarang)
-        assert pasangan["Jumlah Transaksi"] == data.saldo.jumlah_transaksi
+        assert ws.cell(row=b, column=k["pemasukan"]).value == float(
+            data.saldo.total_pemasukan
+        )
+        assert ws.cell(row=b, column=k["pengeluaran"]).value == float(
+            data.saldo.total_pengeluaran
+        )
+        assert ws.cell(row=b, column=k["saldo"]).value == float(
+            data.saldo.saldo_sekarang
+        )
+        assert ws.cell(row=b, column=k["transaksi"]).value == data.saldo.jumlah_transaksi
 
     async def test_saldo_mengikuti_rumus(self, workbook):
         """saldo_awal + pemasukan − pengeluaran."""
@@ -95,24 +109,53 @@ class TestDashboard:
         )
         assert data.saldo.saldo_sekarang == Decimal("8868000.00")
 
-    async def test_bagian_bulan_ini_ada(self, workbook):
-        wb, _, _ = workbook
+    async def test_strip_bulan_ini_memuat_angka_utuh(self, workbook):
+        """Catatan di kartu diringkas; strip ini harus tetap angka pasti."""
+        wb, data, _ = workbook
         ws = wb["DASHBOARD"]
-        label = [ws.cell(row=r, column=2).value for r in range(3, 30)]
-        assert "Pemasukan Bulan Ini" in label
-        assert "Pengeluaran Bulan Ini" in label
-        assert "Selisih Bulan Ini" in label
-        assert "Transaksi Bulan Ini" in label
+        b = data.bulan_ini
 
-    async def test_mata_uang_dan_zona_waktu(self, workbook):
+        label = [ws.cell(row=10, column=c).value for c in (2, 6, 10, 14)]
+        # Judul strip sudah menyebut bulannya, jadi label tidak mengulang.
+        assert label == ["Pemasukan", "Pengeluaran", "Selisih", "Transaksi"]
+        assert "Bulan Ini" in ws.cell(row=9, column=2).value
+
+        # Nilai digabung dua kolom, jangkarnya tepat di kanan labelnya.
+        assert ws.cell(row=10, column=3).value == float(b.pemasukan)
+        assert ws.cell(row=10, column=7).value == float(b.pengeluaran)
+        assert ws.cell(row=10, column=11).value == float(b.selisih)
+        assert ws.cell(row=10, column=15).value == b.jumlah_transaksi
+
+    async def test_mata_uang_dan_zona_waktu_di_subjudul(self, workbook):
         wb, _, _ = workbook
         ws = wb["DASHBOARD"]
-        pasangan = {
-            ws.cell(row=r, column=2).value: ws.cell(row=r, column=3).value
-            for r in range(3, 30)
-        }
-        assert pasangan["Mata Uang"] == "IDR"
-        assert pasangan["Zona Waktu"] == "Asia/Jakarta"
+        subjudul = ws.cell(row=3, column=2).value
+        assert "IDR" in subjudul
+        assert "Asia/Jakarta" in subjudul
+
+    async def test_format_rupiah_memakai_koma_sebagai_pemisah_ribuan(self, workbook):
+        """Titik di format angka Excel berarti desimal, bukan ribuan.
+
+        Menulis '#.##0' membuat 22500 tampil '22500,0'. Ini pernah terjadi.
+        """
+        wb, _, _ = workbook
+        ws = wb["DASHBOARD"]
+        for kolom in self.KOLOM_KARTU.values():
+            format_sel = ws.cell(row=self.BARIS_NILAI_KARTU, column=kolom).number_format
+            assert "#,##0" in format_sel
+            assert "#.##0" not in format_sel
+
+    async def test_grafik_terpasang(self, workbook):
+        wb, _, _ = workbook
+        ws = wb["DASHBOARD"]
+        assert len(ws._charts) == 2
+
+    async def test_kolom_data_grafik_disembunyikan(self, workbook):
+        """Angka sumber grafik harus ada di sheet, tapi tidak mengganggu."""
+        wb, _, _ = workbook
+        ws = wb["DASHBOARD"]
+        for huruf in ("U", "V", "W", "X"):
+            assert ws.column_dimensions[huruf].hidden is True
 
 
 class TestSheetTransaksi:
