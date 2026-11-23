@@ -221,3 +221,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ZOI FINANCE AI
+.env
+.env.*
+!.env.example
+output/
+*.dump
+zoi_local.db

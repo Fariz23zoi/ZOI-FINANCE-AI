@@ -1,0 +1,87 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"   # tersedia di Lunafy (3.11-3.14)
+          cache: pip
+
+      - name: Pasang dependensi
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Jalankan test (SQLite)
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:CIDUMMYTOKENCIDUMMYTOKENCIDUMMYTOK"
+          ADMIN_TELEGRAM_ID: "100000001"
+          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+          OPENROUTER_MODELS: "meta-llama/llama-3.3-70b-instruct:free"
+        run: pytest -q
+
+  pytest-postgres:
+    runs-on: ubuntu-latest
+
+    # Presisi uang dijamin oleh NUMERIC PostgreSQL, bukan oleh SQLite.
+    # Suite yang sama dijalankan ulang di sini terhadap PostgreSQL asli.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: zoi
+          POSTGRES_PASSWORD: zoi
+          POSTGRES_DB: zoi
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["5432:5432"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Pasang dependensi
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Jalankan test (PostgreSQL)
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:CIDUMMYTOKENCIDUMMYTOKENCIDUMMYTOK"
+          ADMIN_TELEGRAM_ID: "100000001"
+          DATABASE_URL: "postgresql+asyncpg://zoi:zoi@localhost:5432/zoi"
+          OPENROUTER_MODELS: "meta-llama/llama-3.3-70b-instruct:free"
+          ZOI_TEST_DATABASE_URL: "postgresql+asyncpg://zoi:zoi@localhost:5432/zoi"
+        run: pytest -q
+
+      - name: Uji migrasi naik-turun-naik
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:CIDUMMYTOKENCIDUMMYTOKENCIDUMMYTOK"
+          ADMIN_TELEGRAM_ID: "100000001"
+          DATABASE_URL: "postgresql+asyncpg://zoi:zoi@localhost:5432/zoi"
+          OPENROUTER_MODELS: "meta-llama/llama-3.3-70b-instruct:free"
+        # Putaran kedua membuktikan downgrade menghapus tipe enum. Tanpa itu,
+        # upgrade setelah rollback gagal dengan "type already exists".
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head

@@ -1,0 +1,259 @@
+name: backup database
+
+# Backup buku kas ZOI FINANCE AI.
+#
+# Berjalan di GitHub Actions, BUKAN di Lunafy — dan itu inti rancangannya.
+# Server gratis Lunafy dihapus bila tidak diperbarui tiap 7 hari; backup yang
+# dijalankan di sana akan mati bersama hal yang seharusnya ia lindungi.
+# GitHub Actions punya jadwalnya sendiri dan tidak bergantung pada bot.
+#
+# Efek samping yang disengaja: job ini menyentuh database setiap minggu,
+# sehingga proyek Supabase paket Free tidak akan pernah dijeda karena
+# aktivitas rendah — bahkan bila botnya sedang mati.
+#
+# Secret yang dibutuhkan (Settings -> Secrets and variables -> Actions):
+#   BACKUP_DATABASE_URL  connection string Session pooler dari Supabase
+#   BACKUP_PASSPHRASE    kata sandi untuk mengenkripsi file dump
+#
+# Lihat docs/DEPLOYMENT.md bagian 9.
+
+on:
+  schedule:
+    # Senin 02:23 WIB (19:23 UTC hari Minggu). Menit ganjil dipilih agar tidak
+    # ikut lonjakan job yang dijadwalkan pada menit 0.
+    - cron: "23 19 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dump-dan-verifikasi:
+    runs-on: ubuntu-latest
+
+    # Postgres kosong untuk MENGUJI pemulihan dump-nya. Tanpa langkah ini,
+    # yang kita punya hanyalah file yang belum pernah dibuktikan bisa dipulihkan.
+    services:
+      verifikasi:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: verifikasi
+          POSTGRES_DB: verifikasi
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["5432:5432"]
+
+    steps:
+      - name: Pasang klien PostgreSQL 17
+        # Versi pg_dump harus >= versi server. Ubuntu runner membawa klien
+        # yang lebih lama, jadi diambil dari repositori resmi PostgreSQL.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          pg_dump --version
+
+      - name: Periksa secret sudah terpasang
+        env:
+          DB: ${{ secrets.BACKUP_DATABASE_URL }}
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$DB" ]; then
+            echo "::error::BACKUP_DATABASE_URL belum diatur di repository secrets."
+            exit 1
+          fi
+          if [ -z "$PASS" ]; then
+            echo "::error::BACKUP_PASSPHRASE belum diatur di repository secrets."
+            exit 1
+          fi
+
+      - name: Catat jumlah baris di sumber
+        env:
+          PGURL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Dicatat SEBELUM dump, lalu dibandingkan dengan hasil restore.
+          psql "$PGURL" -At -F',' -o sumber.csv <<'SQL'
+          SELECT 'users',                count(*) FROM users
+          UNION ALL SELECT 'categories', count(*) FROM categories
+          UNION ALL SELECT 'transactions', count(*) FROM transactions
+          UNION ALL SELECT 'account_settings', count(*) FROM account_settings
+          UNION ALL SELECT 'pending_transactions', count(*) FROM pending_transactions
+          UNION ALL SELECT 'audit_logs', count(*) FROM audit_logs
+          ORDER BY 1;
+          SQL
+          echo "Jumlah baris di sumber:"; cat sumber.csv
+          # Penjaga anti-lulus-hampa: bila psql gagal, -o menghasilkan file
+          # kosong, dan diff dua file kosong di langkah verifikasi akan LULUS.
+          # Verifikasi yang bisa lulus saat semuanya gagal lebih berbahaya
+          # daripada tidak ada verifikasi.
+          if [ "$(wc -l < sumber.csv)" -ne 6 ]; then
+            echo "::error::Gagal membaca jumlah baris sumber (harus 6 tabel, dapat $(wc -l < sumber.csv))."
+            exit 1
+          fi
+          if ! grep -q '^transactions,' sumber.csv; then
+            echo "::error::Baris 'transactions' tidak ada di hasil pembacaan."
+            exit 1
+          fi
+          VERSI=$(psql "$PGURL" -At -c "SELECT version_num FROM alembic_version")
+          echo "alembic_version=$VERSI" | tee versi.txt
+          if [ -z "$VERSI" ]; then
+            echo "::error::alembic_version kosong — database belum dimigrasi."
+            exit 1
+          fi
+
+      - name: Buat dump
+        env:
+          PGURL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          STEMPEL=$(date -u +%Y-%m-%d)
+          echo "STEMPEL=$STEMPEL" >> "$GITHUB_ENV"
+          # --no-owner dan --no-privileges: pemilik objek di Supabase tidak ada
+          # di database tujuan mana pun, dan menyimpannya hanya membuat restore
+          # penuh peringatan.
+          pg_dump "$PGURL" \
+            --format=custom \
+            --schema=public \
+            --no-owner \
+            --no-privileges \
+            --file="zoi-$STEMPEL.dump"
+          ls -lh "zoi-$STEMPEL.dump"
+
+      - name: Verifikasi struktur dump
+        run: |
+          set -euo pipefail
+          pg_restore --list "zoi-$STEMPEL.dump" > daftar.txt
+          for T in users categories transactions account_settings pending_transactions audit_logs alembic_version; do
+            if ! grep -q "TABLE public $T" daftar.txt; then
+              echo "::error::Tabel $T tidak ada di dalam dump."
+              exit 1
+            fi
+          done
+          echo "Ketujuh tabel ada di dalam dump."
+
+      - name: Uji pemulihan ke PostgreSQL kosong
+        env:
+          PGPASSWORD: verifikasi
+        run: |
+          set -euo pipefail
+          # Inilah langkah yang membedakan backup dari sekadar file.
+          #
+          # Skema public dihapus dulu karena dump memuat CREATE SCHEMA public.
+          # Tanpa ini, --exit-on-error akan menggagalkan restore pada error
+          # "schema already exists" yang sebenarnya tidak berbahaya.
+          psql -h localhost -U postgres -d verifikasi -q \
+            -c "DROP SCHEMA IF EXISTS public CASCADE"
+
+          # --exit-on-error WAJIB di sini. Tanpanya pg_restore mengabaikan
+          # error dan tetap keluar dengan status 0, sehingga uji pemulihan
+          # bisa "lulus" di atas restore yang sebagian gagal.
+          pg_restore --no-owner --no-privileges --exit-on-error \
+            -h localhost -p 5432 -U postgres -d verifikasi \
+            "zoi-$STEMPEL.dump"
+
+          psql -h localhost -U postgres -d verifikasi -At -F',' -o hasil.csv <<'SQL'
+          SELECT 'users',                count(*) FROM users
+          UNION ALL SELECT 'categories', count(*) FROM categories
+          UNION ALL SELECT 'transactions', count(*) FROM transactions
+          UNION ALL SELECT 'account_settings', count(*) FROM account_settings
+          UNION ALL SELECT 'pending_transactions', count(*) FROM pending_transactions
+          UNION ALL SELECT 'audit_logs', count(*) FROM audit_logs
+          ORDER BY 1;
+          SQL
+
+          echo "Sumber:"; cat sumber.csv
+          echo "Hasil restore:"; cat hasil.csv
+          if [ "$(wc -l < hasil.csv)" -ne 6 ]; then
+            echo "::error::Gagal membaca jumlah baris hasil restore."
+            exit 1
+          fi
+          if ! diff -u sumber.csv hasil.csv; then
+            echo "::error::Jumlah baris setelah restore tidak sama dengan sumber."
+            exit 1
+          fi
+          echo "Jumlah baris cocok di keenam tabel."
+
+      - name: Uji saldo tetap sama setelah restore
+        env:
+          PGPASSWORD: verifikasi
+          PGURL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Jumlah baris bisa cocok sementara nilainya rusak. Saldo menguji
+          # angkanya, dan itu satu-satunya hal yang benar-benar penting di sini.
+          SALDO_SQL="SELECT (SELECT initial_balance FROM account_settings WHERE id=1)
+                          + COALESCE(SUM(amount) FILTER (WHERE transaction_type='income'),0)
+                          - COALESCE(SUM(amount) FILTER (WHERE transaction_type='expense'),0)
+                     FROM transactions WHERE status='active';"
+          A=$(psql "$PGURL" -At -c "$SALDO_SQL")
+          B=$(psql -h localhost -U postgres -d verifikasi -At -c "$SALDO_SQL")
+          echo "Saldo sumber:  $A"
+          echo "Saldo restore: $B"
+          # Keduanya kosong juga "sama" — jadi kosong harus ditolak lebih dulu.
+          if [ -z "$A" ] || [ -z "$B" ]; then
+            echo "::error::Saldo tidak terbaca (sumber='$A' restore='$B')."
+            exit 1
+          fi
+          if [ "$A" != "$B" ]; then
+            echo "::error::Saldo berbeda setelah restore: $A vs $B"
+            exit 1
+          fi
+          echo "SALDO=$A" >> "$GITHUB_ENV"
+
+      - name: Enkripsi dump
+        env:
+          PASS: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Artifact bisa diunduh siapa pun yang punya akses ke repositori.
+          # Isinya catatan keuangan, jadi dienkripsi lebih dulu.
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+            --passphrase "$PASS" \
+            --output "zoi-$STEMPEL.dump.gpg" \
+            "zoi-$STEMPEL.dump"
+          rm -f "zoi-$STEMPEL.dump"
+          ls -lh "zoi-$STEMPEL.dump.gpg"
+
+      - name: Unggah artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoi-backup-${{ env.STEMPEL }}
+          path: zoi-*.dump.gpg
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Ringkasan
+        run: |
+          {
+            echo "## Backup ZOI FINANCE AI"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tanggal (UTC) | $STEMPEL |"
+            echo "| $(cat versi.txt | tr '=' '|' ) |"
+            echo "| Saldo | $SALDO |"
+            echo "| Uji pemulihan | lulus — jumlah baris dan saldo cocok |"
+            echo "| Enkripsi | AES256, passphrase di repository secret |"
+            echo "| Retensi artifact | 90 hari |"
+            echo
+            echo "### Jumlah baris"
+            echo
+            echo "| Tabel | Baris |"
+            echo "|---|---|"
+            sed 's/,/ | /' sumber.csv | sed 's/^/| /; s/$/ |/'
+            echo
+            echo "Memulihkan: unduh artifact, lalu"
+            echo '```'
+            echo "gpg --decrypt zoi-$STEMPEL.dump.gpg > zoi.dump"
+            echo 'pg_restore -d "$DATABASE_URL" --clean --if-exists zoi.dump'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

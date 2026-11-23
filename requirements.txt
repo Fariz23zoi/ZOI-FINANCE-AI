@@ -1,0 +1,13 @@
+# ZOI FINANCE AI — dependensi produksi
+# Semua pustaka di sini tersedia sebagai wheel murni Python atau punya
+# build Termux yang umum. Lihat docs/TERMUX_SETUP.md.
+
+aiogram==3.33.0
+SQLAlchemy[asyncio]==2.1.9
+asyncpg==0.32.0
+alembic==1.20.1
+pydantic==2.12.5
+pydantic-settings==2.16.3
+openpyxl==3.1.5
+httpx==0.28.1
+tzdata==2026.6
