@@ -19,7 +19,7 @@ from app.bot.keyboards import confirm as kb
 from app.database.models import AuditAction, User
 from app.database.repositories import audit_repo, settings_repo, transaction_repo
 from app.database.session import session_scope
-from app.services import balance_service, member_service, permission_service
+from app.services import balance_service, member_service, permission_service, pin_service
 from app.services import transaction_service as ts
 from app.utils.logger import get_logger
 from app.utils.money import format_rupiah, parse_indonesian_amount
@@ -123,6 +123,7 @@ async def konfirmasi_hapus(callback: CallbackQuery, user: User) -> None:
         "<i>Barisnya tetap ada di database dan tercatat di log audit.</i>"
     )
     await callback.answer("Dihapus")
+    await pin_service.segarkan(callback.bot)
 
 
 # ── /anggota ────────────────────────────────────────────────────

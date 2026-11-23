@@ -106,6 +106,13 @@ class User(Base):
     )
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    #: Nomor pesan saldo yang disemat di percakapan pribadi anggota ini.
+    #: NULL berarti belum pernah dibuat — atau pesannya hilang dan akan
+    #: dibuat ulang pada pembaruan berikutnya.
+    pinned_message_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
     role: Mapped[UserRole] = mapped_column(
         SAEnum(UserRole, name="user_role", values_callable=lambda e: [m.value for m in e]),
         nullable=False,

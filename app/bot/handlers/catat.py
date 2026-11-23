@@ -34,7 +34,7 @@ from app.database.repositories import (
     transaction_repo,
 )
 from app.database.session import session_scope
-from app.services import balance_service, permission_service
+from app.services import balance_service, permission_service, pin_service
 from app.services import transaction_service as ts
 from app.utils.dates import local_today, parse_indonesian_date
 from app.utils.logger import get_logger
@@ -198,6 +198,7 @@ async def tombol_simpan(callback: CallbackQuery, user: User) -> None:
     # kalau belum (aturan ZOI #8 dan #12).
     await callback.message.edit_text(teks)
     await callback.answer("Tersimpan")
+    await pin_service.segarkan(callback.bot)
 
 
 @router.callback_query(F.data.startswith("cf:dup:"))
@@ -239,6 +240,7 @@ async def tombol_simpan_duplikat(callback: CallbackQuery, user: User) -> None:
 
     await callback.message.edit_text(teks)
     await callback.answer("Tersimpan")
+    await pin_service.segarkan(callback.bot)
 
 
 @router.callback_query(F.data.startswith("cf:cancel:"))

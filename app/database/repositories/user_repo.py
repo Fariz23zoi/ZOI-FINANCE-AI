@@ -106,3 +106,19 @@ async def count_admins(session: AsyncSession) -> int:
         .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
     )
     return int(hasil.scalar_one())
+
+
+async def set_pinned_message_id(
+    session: AsyncSession, user_id: int, message_id: Optional[int]
+) -> None:
+    """Simpan nomor pesan papan saldo yang disemat.
+
+    Dipakai lewat ORM, bukan UPDATE massal: objek User yang sedang dipegang
+    pemanggil harus ikut berubah. UPDATE massal meninggalkannya menampilkan
+    nomor lama, sehingga pembaruan berikutnya menyunting pesan yang salah.
+    """
+    pengguna = await session.get(User, user_id)
+    if pengguna is None:
+        return
+    pengguna.pinned_message_id = message_id
+    await session.flush()

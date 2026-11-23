@@ -31,7 +31,7 @@ from app.config import get_settings
 from app.database.models import Transaction, User
 from app.database.repositories import category_repo, transaction_repo
 from app.database.session import session_scope
-from app.services import balance_service, permission_service
+from app.services import balance_service, permission_service, pin_service
 from app.services import transaction_service as ts
 from app.utils.dates import format_date_id, local_today, parse_indonesian_date
 from app.utils.logger import get_logger
@@ -202,6 +202,7 @@ async def _terapkan(message: Message, user: User, state: FSMContext, **nilai) ->
         f"💳 Saldo sekarang: <b>{teks_saldo}</b>\n\n"
         "<i>Perubahan tercatat di log audit.</i>"
     )
+    await pin_service.segarkan(message.bot)
 
 
 @router.message(EditTransaksi.menunggu_jumlah, F.text)

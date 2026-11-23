@@ -22,7 +22,7 @@ from app.config import get_settings
 from app.database.models import TransactionType, User
 from app.database.repositories import category_repo
 from app.database.session import session_scope
-from app.services import balance_service, permission_service
+from app.services import balance_service, permission_service, pin_service
 from app.services import transaction_service as ts
 from app.utils.dates import local_today
 from app.utils.logger import get_logger
@@ -162,6 +162,8 @@ async def _simpan(target, user: User, state: FSMContext, keterangan: str | None)
         await target.edit_text(teks)
     else:
         await target.answer(teks)
+
+    await pin_service.segarkan(target.bot)
 
 
 @router.callback_query(CatatManual.isi_keterangan, F.data == "mn:skip")
